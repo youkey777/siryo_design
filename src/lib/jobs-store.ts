@@ -1,7 +1,8 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { ensureDir, getJobDir, JOBS_DIR } from "@/lib/paths";
-import type { GenerationRun, JobRecord } from "@/lib/types";
+import type { GenerationRun, JobRecord, ManualMemoExclusion } from "@/lib/types";
 
 export function initJobStorage(jobId: string): {
   jobDir: string;
@@ -45,6 +46,8 @@ export function loadJob(jobId: string): JobRecord {
     ...job,
     runs: Array.isArray(job.runs) ? job.runs : [],
     designReferenceFiles: Array.isArray(job.designReferenceFiles) ? job.designReferenceFiles : [],
+    logoReferenceFiles: Array.isArray(job.logoReferenceFiles) ? job.logoReferenceFiles : [],
+    manualMemoExclusions: Array.isArray(job.manualMemoExclusions) ? job.manualMemoExclusions : [],
   };
 }
 
@@ -76,6 +79,56 @@ export function appendDesignReferenceFiles(jobId: string, files: string[]): JobR
   const job = loadJob(jobId);
   const merged = new Set([...(job.designReferenceFiles ?? []), ...files]);
   job.designReferenceFiles = Array.from(merged);
+  saveJob(job);
+  return job;
+}
+
+export function appendLogoReferenceFiles(jobId: string, files: string[]): JobRecord {
+  const job = loadJob(jobId);
+  const merged = new Set([...(job.logoReferenceFiles ?? []), ...files]);
+  job.logoReferenceFiles = Array.from(merged);
+  saveJob(job);
+  return job;
+}
+
+export function upsertManualMemoExclusion(
+  jobId: string,
+  item: Omit<ManualMemoExclusion, "id"> & { id?: string },
+): JobRecord {
+  const job = loadJob(jobId);
+  const rows = [...(job.manualMemoExclusions ?? [])];
+  const normalizedText = item.text.trim();
+  if (!normalizedText) {
+    throw new Error("除外テキストは必須です。");
+  }
+  if (item.page <= 0) {
+    throw new Error("ページ番号は1以上を指定してください。");
+  }
+
+  const id = item.id?.trim() || `manual_${crypto.randomUUID()}`;
+  const index = rows.findIndex((row) => row.id === id);
+  const nextRow: ManualMemoExclusion = {
+    id,
+    page: item.page,
+    text: normalizedText,
+    enabled: item.enabled,
+  };
+
+  if (index >= 0) {
+    rows[index] = nextRow;
+  } else {
+    rows.push(nextRow);
+  }
+
+  rows.sort((a, b) => a.page - b.page || a.id.localeCompare(b.id));
+  job.manualMemoExclusions = rows;
+  saveJob(job);
+  return job;
+}
+
+export function deleteManualMemoExclusion(jobId: string, id: string): JobRecord {
+  const job = loadJob(jobId);
+  job.manualMemoExclusions = (job.manualMemoExclusions ?? []).filter((row) => row.id !== id);
   saveJob(job);
   return job;
 }

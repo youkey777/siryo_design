@@ -6,6 +6,13 @@ export type MemoCandidate = {
   excludedByDefault: boolean;
 };
 
+export type ManualMemoExclusion = {
+  id: string;
+  page: number;
+  text: string;
+  enabled: boolean;
+};
+
 export type SlideInfo = {
   page: number;
   sourceImageFile: string;
@@ -40,6 +47,8 @@ export type JobRecord = {
   slides: SlideInfo[];
   memoDecisions: Record<string, boolean>;
   designReferenceFiles?: string[];
+  logoReferenceFiles?: string[];
+  manualMemoExclusions?: ManualMemoExclusion[];
   runs: GenerationRun[];
 };
 
@@ -52,9 +61,18 @@ export type ExtractedSlide = {
   page: number;
   textBlocks: string[];
   notes: string[];
+  textShapes?: Array<{
+    text: string;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }>;
 };
 
 export type ExtractedPptxPayload = {
   slideCount: number;
+  slideWidth: number;
+  slideHeight: number;
   slides: ExtractedSlide[];
 };

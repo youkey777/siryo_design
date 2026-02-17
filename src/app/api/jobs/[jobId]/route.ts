@@ -11,6 +11,8 @@ export async function GET(
     const { jobId } = await context.params;
     const job = loadJob(jobId);
     const designReferenceFiles = job.designReferenceFiles ?? [];
+    const logoReferenceFiles = job.logoReferenceFiles ?? [];
+    const manualMemoExclusions = job.manualMemoExclusions ?? [];
 
     return NextResponse.json({
       ...job,
@@ -25,6 +27,12 @@ export async function GET(
         file,
         url: `/api/jobs/${jobId}/asset?file=${encodeURIComponent(file)}`,
       })),
+      logoReferenceFiles,
+      logoReferenceUrls: logoReferenceFiles.map((file) => ({
+        file,
+        url: `/api/jobs/${jobId}/asset?file=${encodeURIComponent(file)}`,
+      })),
+      manualMemoExclusions,
       runs: job.runs.map((run) => ({
         ...run,
         results: run.results.map((result) => ({

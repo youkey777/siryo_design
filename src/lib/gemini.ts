@@ -42,6 +42,7 @@ export async function generateImageWithGemini(params: {
   model: string;
   prompt: string;
   inputImagePath: string;
+  logoImagePaths?: string[];
   referenceImagePaths?: string[];
   aspectRatio?: string;
   imageSize?: "1K" | "2K" | "4K";
@@ -51,6 +52,7 @@ export async function generateImageWithGemini(params: {
     model,
     prompt,
     inputImagePath,
+    logoImagePaths = [],
     referenceImagePaths = [],
     aspectRatio = "16:9",
     imageSize = "2K",
@@ -65,6 +67,19 @@ export async function generateImageWithGemini(params: {
       data: source.toString("base64"),
     },
   });
+
+  for (const logoImagePath of logoImagePaths) {
+    if (!fs.existsSync(logoImagePath)) {
+      continue;
+    }
+    const logo = fs.readFileSync(logoImagePath);
+    parts.push({
+      inlineData: {
+        mimeType: mimeTypeFromPath(logoImagePath),
+        data: logo.toString("base64"),
+      },
+    });
+  }
 
   for (const referenceImagePath of referenceImagePaths) {
     if (!fs.existsSync(referenceImagePath)) {

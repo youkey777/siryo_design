@@ -16,11 +16,13 @@
 
 html,
 body {
+  height: 100%;
   margin: 0;
   padding: 0;
   background: radial-gradient(circle at top right, #e7f1ff 0%, var(--bg) 42%);
   color: var(--text);
   font-family: var(--font-body), sans-serif;
+  overflow: hidden;
 }
 
 a {
@@ -32,6 +34,10 @@ a {
   max-width: 1580px;
   margin: 0 auto;
   padding: 20px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .header {
@@ -63,6 +69,8 @@ a {
 .layoutGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.9fr);
+  flex: 1;
+  min-height: 0;
   gap: 16px;
 }
 
@@ -72,6 +80,8 @@ a {
   border-radius: 18px;
   box-shadow: var(--shadow);
   padding: 16px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .sectionTitle {
@@ -290,6 +300,15 @@ a {
   box-shadow: 0 0 0 2px rgba(46, 124, 246, 0.15);
 }
 
+.thumbItem.isRegenerated {
+  border-color: #f5a524;
+  background: #fffaf0;
+}
+
+.thumbItem.isRegenerated.isActive {
+  box-shadow: 0 0 0 2px rgba(245, 165, 36, 0.2);
+}
+
 .previewPane {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -297,6 +316,11 @@ a {
   min-height: 280px;
   background: #fff;
   position: relative;
+}
+
+.pillRegen {
+  background: #fff1d6;
+  color: #995a00;
 }
 
 .generationPanel {
@@ -351,8 +375,14 @@ a {
 }
 
 @media (max-width: 1400px) {
+  html,
+  body {
+    overflow: hidden;
+  }
+
   .layoutGrid {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .resultsWorkspace {

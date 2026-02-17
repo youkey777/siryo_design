@@ -46,8 +46,19 @@ type JobResponse = {
   slideCount: number;
   slides: Slide[];
   memoDecisions: Record<string, boolean>;
+  manualMemoExclusions?: Array<{
+    id: string;
+    page: number;
+    text: string;
+    enabled: boolean;
+  }>;
   designReferenceFiles?: string[];
   designReferenceUrls?: Array<{
+    file: string;
+    url: string;
+  }>;
+  logoReferenceFiles?: string[];
+  logoReferenceUrls?: Array<{
     file: string;
     url: string;
   }>;
@@ -58,6 +69,15 @@ type ReferenceUploadResponse = {
   ok: boolean;
   designReferenceFiles: string[];
   designReferenceUrls: Array<{
+    file: string;
+    url: string;
+  }>;
+};
+
+type LogoUploadResponse = {
+  ok: boolean;
+  logoReferenceFiles: string[];
+  logoReferenceUrls: Array<{
     file: string;
     url: string;
   }>;
@@ -84,6 +104,14 @@ type EditRow = {
   fixPrompt: string;
 };
 
+type ManualExclusionRow = {
+  id: string;
+  page: string;
+  text: string;
+  enabled: boolean;
+  isNew?: boolean;
+};
+
 type DisplayResult = {
   id: string;
   page: number;
@@ -96,7 +124,13 @@ type DisplayResult = {
   error?: string;
 };
 
-type LoadingOperation = "extract" | "reference-upload" | "design-check" | "generate" | "regenerate";
+type LoadingOperation =
+  | "extract"
+  | "reference-upload"
+  | "logo-upload"
+  | "design-check"
+  | "generate"
+  | "regenerate";
 
 type PersistedUiState = {
   jobId?: string;
@@ -113,6 +147,8 @@ const UI_STATE_STORAGE_KEY = "nanobanana-slide-studio/ui-state/v2";
 const PROMPT_ENGINE_LABEL = "Prompt: ローカルテンプレート生成（LLM呼び出しなし）";
 const DEFAULT_IMAGE_MODEL_LABEL = "Image: gemini-3-pro-image-preview";
 const FINAL_CURSOR_LATEST = Number.MAX_SAFE_INTEGER;
+const OVERLAP_FIX_PRESET =
+  "不要な多重四角形・過剰な重なりを抑え、視認性を優先してください。意図がない装飾の重なりは作らない。";
 
 type FinalDeckSnapshot = {
   runId: string;
@@ -134,6 +170,16 @@ function createEditRow(page = ""): EditRow {
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     page,
     fixPrompt: "",
+  };
+}
+
+function createManualExclusionRow(page = "", text = ""): ManualExclusionRow {
+  return {
+    id: `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    page,
+    text,
+    enabled: true,
+    isNew: true,
   };
 }
 
@@ -186,6 +232,11 @@ function normalizeJob(payload: JobResponse): JobResponse {
     runs: Array.isArray(payload.runs) ? payload.runs : [],
     designReferenceFiles: Array.isArray(payload.designReferenceFiles) ? payload.designReferenceFiles : [],
     designReferenceUrls: Array.isArray(payload.designReferenceUrls) ? payload.designReferenceUrls : [],
+    logoReferenceFiles: Array.isArray(payload.logoReferenceFiles) ? payload.logoReferenceFiles : [],
+    logoReferenceUrls: Array.isArray(payload.logoReferenceUrls) ? payload.logoReferenceUrls : [],
+    manualMemoExclusions: Array.isArray(payload.manualMemoExclusions)
+      ? payload.manualMemoExclusions
+      : [],
   };
 }
 
@@ -251,9 +302,11 @@ function buildFinalDeckSnapshots(runs: Run[]): FinalDeckSnapshot[] {
 export default function HomePage() {
   const [fileName, setFileName] = useState("");
   const [queuedReferenceFiles, setQueuedReferenceFiles] = useState<File[]>([]);
+  const [queuedLogoFiles, setQueuedLogoFiles] = useState<File[]>([]);
   const [job, setJob] = useState<JobResponse | null>(null);
   const [designPrompt, setDesignPrompt] = useState("");
   const [memoDecisions, setMemoDecisions] = useState<Record<string, boolean>>({});
+  const [manualExclusionRows, setManualExclusionRows] = useState<ManualExclusionRow[]>([]);
   const [editRows, setEditRows] = useState<EditRow[]>([createEditRow()]);
   const [regenerateSelection, setRegenerateSelection] = useState("");
   const [previewResults, setPreviewResults] = useState<PreviewGeneratedResult[]>([]);
@@ -306,6 +359,15 @@ export default function HomePage() {
               }
               return normalized.memoDecisions ?? {};
             });
+            setManualExclusionRows(
+              (normalized.manualMemoExclusions ?? []).map((row) => ({
+                id: row.id,
+                page: String(row.page),
+                text: row.text,
+                enabled: row.enabled,
+                isNew: false,
+              })),
+            );
             setStatusText("前回の作業状態を復元しました。");
           })
           .catch(() => {
@@ -432,6 +494,15 @@ export default function HomePage() {
     const normalized = normalizeJob(payload);
     setJob(normalized);
     setMemoDecisions(normalized.memoDecisions ?? {});
+    setManualExclusionRows(
+      (normalized.manualMemoExclusions ?? []).map((row) => ({
+        id: row.id,
+        page: String(row.page),
+        text: row.text,
+        enabled: row.enabled,
+        isNew: false,
+      })),
+    );
   };
 
   const uploadReferenceFiles = async (jobId: string, files: File[]) => {
@@ -461,6 +532,33 @@ export default function HomePage() {
     }
   };
 
+  const uploadLogoFiles = async (jobId: string, files: File[]) => {
+    if (files.length === 0) {
+      return;
+    }
+
+    setLoadingOperation("logo-upload");
+    setErrorText("");
+    setStatusText(`ロゴ画像をアップロードしています... (${files.length}件)`);
+    try {
+      const formData = new FormData();
+      formData.append("jobId", jobId);
+      for (const file of files) {
+        formData.append("files", file);
+      }
+
+      await fetchJson<LogoUploadResponse>("/api/logo/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      await refreshJob(jobId);
+      setStatusText(`ロゴ画像を ${files.length} 件追加しました。`);
+    } finally {
+      setLoadingOperation(null);
+    }
+  };
+
   const extractFromFile = async (selectedFile: File) => {
     setLoadingOperation("extract");
     setErrorText("");
@@ -481,9 +579,29 @@ export default function HomePage() {
 
       setJob(normalized);
       setMemoDecisions(normalized.memoDecisions ?? {});
+      setManualExclusionRows(
+        (normalized.manualMemoExclusions ?? []).map((row) => ({
+          id: row.id,
+          page: String(row.page),
+          text: row.text,
+          enabled: row.enabled,
+          isNew: false,
+        })),
+      );
       setEditRows([createEditRow()]);
       setRegenerateSelection("");
       setStatusText(`読み込み完了: ${normalized.slideCount}ページ`);
+      if (queuedLogoFiles.length > 0) {
+        const pendingLogos = [...queuedLogoFiles];
+        setQueuedLogoFiles([]);
+        try {
+          await uploadLogoFiles(normalized.jobId, pendingLogos);
+        } catch (error) {
+          setErrorText(
+            error instanceof Error ? error.message : "ロゴ画像アップロードに失敗しました。",
+          );
+        }
+      }
       if (queuedReferenceFiles.length > 0) {
         const pending = [...queuedReferenceFiles];
         setQueuedReferenceFiles([]);
@@ -498,6 +616,7 @@ export default function HomePage() {
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "PowerPoint読み込みに失敗しました。");
       setJob(null);
+      setManualExclusionRows([]);
     } finally {
       setLoadingOperation(null);
     }
@@ -512,11 +631,33 @@ export default function HomePage() {
       setPreviewResults([]);
       setDisplayMode(null);
       setFinalHistoryCursor(null);
+      setManualExclusionRows([]);
+      setQueuedLogoFiles([]);
+      setQueuedReferenceFiles([]);
       setSelectedResultId(null);
       return;
     }
 
     await extractFromFile(selectedFile);
+  };
+
+  const handleLogoFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+
+    if (job) {
+      try {
+        await uploadLogoFiles(job.jobId, files);
+      } catch (error) {
+        setErrorText(error instanceof Error ? error.message : "ロゴ画像アップロードに失敗しました。");
+      }
+      return;
+    }
+
+    setQueuedLogoFiles((prev) => [...prev, ...files]);
+    setStatusText("ロゴ画像を一時保存しました。PowerPoint読込後に自動でアップロードされます。");
   };
 
   const handleReferenceFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -659,6 +800,91 @@ export default function HomePage() {
     }
   };
 
+  const handleSaveManualExclusion = async (row: ManualExclusionRow) => {
+    if (!job) {
+      setErrorText("先にPowerPointファイルを選択してください。");
+      return;
+    }
+    const page = Number(row.page);
+    if (!Number.isInteger(page) || page <= 0 || page > job.slideCount) {
+      setErrorText(`ページ番号は1-${job.slideCount}の範囲で入力してください。`);
+      return;
+    }
+    if (!row.text.trim()) {
+      setErrorText("除外テキストを入力してください。");
+      return;
+    }
+
+    setErrorText("");
+    setStatusText(`手動除外を保存しています... (page ${page})`);
+    try {
+      await fetchJson<{ ok: boolean; manualMemoExclusions: Array<{ id: string; page: number; text: string; enabled: boolean }> }>(
+        "/api/memo/manual",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: job.jobId,
+            item: {
+              id: row.id.startsWith("tmp_") ? undefined : row.id,
+              page,
+              text: row.text.trim(),
+              enabled: row.enabled,
+            },
+          }),
+        },
+      );
+      await refreshJob(job.jobId);
+      setStatusText(`手動除外を保存しました。 (page ${page})`);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "手動除外の保存に失敗しました。");
+    }
+  };
+
+  const handleDeleteManualExclusion = async (row: ManualExclusionRow) => {
+    if (!job) {
+      return;
+    }
+    if (row.id.startsWith("tmp_")) {
+      setManualExclusionRows((prev) => prev.filter((item) => item.id !== row.id));
+      return;
+    }
+
+    setErrorText("");
+    setStatusText("手動除外を削除しています...");
+    try {
+      await fetchJson<{ ok: boolean; manualMemoExclusions: Array<{ id: string; page: number; text: string; enabled: boolean }> }>(
+        "/api/memo/manual/delete",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: job.jobId,
+            id: row.id,
+          }),
+        },
+      );
+      await refreshJob(job.jobId);
+      setStatusText("手動除外を削除しました。");
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "手動除外の削除に失敗しました。");
+    }
+  };
+
+  const applyOverlapFixPreset = (rowId: string) => {
+    setEditRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== rowId) {
+          return row;
+        }
+        const nextText = row.fixPrompt.trim()
+          ? `${row.fixPrompt.trim()}\n${OVERLAP_FIX_PRESET}`
+          : OVERLAP_FIX_PRESET;
+        return { ...row, fixPrompt: nextText };
+      }),
+    );
+  };
+
   const handleUndoOneStep = () => {
     if (!activeFinalSnapshot || finalSnapshotIndex <= 0) {
       return;
@@ -791,6 +1017,35 @@ export default function HomePage() {
           </div>
 
           <div className="row">
+            <label className="fieldLabel" htmlFor="logoReferenceFiles">
+              ロゴマーク画像（任意・複数可）
+            </label>
+            <input
+              id="logoReferenceFiles"
+              className="input"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              onChange={handleLogoFileChange}
+            />
+            <p className="small">ここに添付したロゴは固定対象として扱います。生成後に同じロゴで強制上書きします。</p>
+
+            {queuedLogoFiles.length > 0 ? (
+              <p className="small">一時保存中: {queuedLogoFiles.map((f) => f.name).join(", ")}</p>
+            ) : null}
+
+            {(job?.logoReferenceUrls?.length ?? 0) > 0 ? (
+              <div className="refList">
+                {job?.logoReferenceUrls?.map((ref) => (
+                  <a key={ref.file} className="refItem" href={ref.url} target="_blank" rel="noreferrer">
+                    {ref.file.split("/").pop()}
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="row">
             <label className="fieldLabel" htmlFor="designReferenceFiles">
               デザイン参考ファイル（任意）
             </label>
@@ -888,6 +1143,81 @@ export default function HomePage() {
             ))}
           </div>
 
+          <div className="row" style={{ marginTop: 10 }}>
+            <div className="buttonRow" style={{ justifyContent: "space-between" }}>
+              <h4 className="sectionTitle" style={{ marginBottom: 0 }}>
+                手動除外（未検出メモ用）
+              </h4>
+              <button
+                className="btn"
+                onClick={() => setManualExclusionRows((prev) => [...prev, createManualExclusionRow()])}
+                disabled={loading || !job}
+              >
+                手動除外を追加
+              </button>
+            </div>
+            {manualExclusionRows.length === 0 ? (
+              <p className="small">未検出のメモがある場合は、ここから除外ルールを追加してください。</p>
+            ) : null}
+
+            {manualExclusionRows.map((row) => (
+              <div key={row.id} className="memoItem">
+                <div className="row">
+                  <label className="fieldLabel">ページ番号</label>
+                  <input
+                    className="input"
+                    value={row.page}
+                    onChange={(event) =>
+                      setManualExclusionRows((prev) =>
+                        prev.map((item) =>
+                          item.id === row.id ? { ...item, page: event.target.value } : item,
+                        ),
+                      )
+                    }
+                    placeholder="例: 12"
+                  />
+                </div>
+                <div className="row">
+                  <label className="fieldLabel">除外テキスト（部分一致）</label>
+                  <textarea
+                    className="textarea"
+                    value={row.text}
+                    onChange={(event) =>
+                      setManualExclusionRows((prev) =>
+                        prev.map((item) =>
+                          item.id === row.id ? { ...item, text: event.target.value } : item,
+                        ),
+                      )
+                    }
+                    placeholder="例: キャリアアドバイザーのやりがいを提示して..."
+                  />
+                </div>
+                <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={row.enabled}
+                    onChange={(event) =>
+                      setManualExclusionRows((prev) =>
+                        prev.map((item) =>
+                          item.id === row.id ? { ...item, enabled: event.target.checked } : item,
+                        ),
+                      )
+                    }
+                  />
+                  この手動除外を有効にする
+                </label>
+                <div className="buttonRow" style={{ marginTop: 8 }}>
+                  <button className="btn btnSecondary" onClick={() => handleSaveManualExclusion(row)} disabled={loading || !job}>
+                    保存
+                  </button>
+                  <button className="btn btnDanger" onClick={() => handleDeleteManualExclusion(row)} disabled={loading || !job}>
+                    削除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
           {hasGeneratedResults ? (
             <>
               <h3 className="sectionTitle">3. 修正・再生成</h3>
@@ -955,6 +1285,11 @@ export default function HomePage() {
                     />
                   </div>
                   <div className="buttonRow">
+                    <button className="btn" onClick={() => applyOverlapFixPreset(row.id)} disabled={loading}>
+                      重なり抑制プリセット
+                    </button>
+                  </div>
+                  <div className="buttonRow">
                     <button
                       className="btn btnDanger"
                       onClick={() => setEditRows((prev) => prev.filter((item) => item.id !== row.id))}
@@ -1016,13 +1351,18 @@ export default function HomePage() {
                 rightResults.map((result) => (
                   <button
                     key={result.id}
-                    className={`thumbItem ${selectedResult?.id === result.id ? "isActive" : ""}`}
+                    className={`thumbItem ${selectedResult?.id === result.id ? "isActive" : ""} ${
+                      result.source === "regenerate" ? "isRegenerated" : ""
+                    }`}
                     type="button"
                     onClick={() => setSelectedResultId(result.id)}
                   >
                     <div className="buttonRow" style={{ justifyContent: "space-between" }}>
                       <strong>page {result.page}</strong>
-                      <span className="pill">{result.source === "preview" ? "design-check" : result.source}</span>
+                      <div className="buttonRow">
+                        <span className="pill">{result.source === "preview" ? "design-check" : result.source}</span>
+                        {result.source === "regenerate" ? <span className="pill pillRegen">再生成</span> : null}
+                      </div>
                     </div>
                     <div className="slideFrame slideFrameSmall">
                       {result.status === "success" && result.imageUrl ? (
@@ -1050,7 +1390,10 @@ export default function HomePage() {
                       page {selectedResult.page}
                       {selectedResult.versionLabel ? ` / ${selectedResult.versionLabel}` : ""}
                     </strong>
-                    {selectedResult.runId ? <span className="small">runId: {selectedResult.runId}</span> : null}
+                    <div className="buttonRow">
+                      {selectedResult.source === "regenerate" ? <span className="pill pillRegen">再生成</span> : null}
+                      {selectedResult.runId ? <span className="small">runId: {selectedResult.runId}</span> : null}
+                    </div>
                   </div>
 
                   <div className="slideFrame slideFrameLarge">

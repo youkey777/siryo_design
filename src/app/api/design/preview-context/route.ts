@@ -37,6 +37,8 @@ export async function POST(request: Request) {
         slide,
         designPrompt: body.designPrompt,
         memoDecisions: job.memoDecisions,
+        manualMemoExclusions: job.manualMemoExclusions,
+        logoReferenceCount: (job.logoReferenceFiles ?? []).length,
       });
 
       return {

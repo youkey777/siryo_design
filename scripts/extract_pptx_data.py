@@ -32,11 +32,22 @@ def main():
     slides = []
     for idx, slide in enumerate(prs.slides, start=1):
         text_blocks = []
+        text_shapes = []
         for shape in slide.shapes:
             if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
                 text = (shape.text or "").strip()
                 if text:
-                    text_blocks.append(text.replace("\n", " ").strip())
+                    normalized = text.replace("\n", " ").strip()
+                    text_blocks.append(normalized)
+                    text_shapes.append(
+                        {
+                            "text": normalized,
+                            "left": int(getattr(shape, "left", 0) or 0),
+                            "top": int(getattr(shape, "top", 0) or 0),
+                            "width": int(getattr(shape, "width", 0) or 0),
+                            "height": int(getattr(shape, "height", 0) or 0),
+                        }
+                    )
 
         notes_text = read_notes(slide)
         notes = [line.strip() for line in notes_text.splitlines() if line.strip()] if notes_text else []
@@ -46,11 +57,14 @@ def main():
                 "page": idx,
                 "textBlocks": text_blocks,
                 "notes": notes,
+                "textShapes": text_shapes,
             }
         )
 
     payload = {
         "slideCount": len(prs.slides),
+        "slideWidth": int(getattr(prs, "slide_width", 0) or 0),
+        "slideHeight": int(getattr(prs, "slide_height", 0) or 0),
         "slides": slides,
     }
 

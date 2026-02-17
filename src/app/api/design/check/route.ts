@@ -1,10 +1,11 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { loadJob, updateMemoDecisions } from "@/lib/jobs-store";
 import { getApiKey } from "@/lib/settings";
-import { buildPromptForSlide } from "@/lib/prompts";
+import { buildPromptForSlide, getPromptExclusionStats } from "@/lib/prompts";
+import { applyLogoLock } from "@/lib/logo-lock";
 import { generateImageWithGemini, imageExtensionFromMime } from "@/lib/gemini";
 import { getJobDir } from "@/lib/paths";
 
@@ -50,6 +51,7 @@ export async function POST(request: Request) {
     const jobDir = getJobDir(job.jobId);
     const previewDir = path.join(jobDir, "outputs", "design-check");
     const referenceImagePaths = (job.designReferenceFiles ?? []).map((file) => path.join(jobDir, file));
+    const logoImagePaths = (job.logoReferenceFiles ?? []).map((file) => path.join(jobDir, file));
     fs.mkdirSync(previewDir, { recursive: true });
 
     const results: Array<{
@@ -67,7 +69,18 @@ export async function POST(request: Request) {
         slide,
         designPrompt: body.designPrompt,
         memoDecisions: job.memoDecisions,
+        manualMemoExclusions: job.manualMemoExclusions,
+        logoReferenceCount: logoImagePaths.length,
       });
+
+      const stats = getPromptExclusionStats({
+        slide,
+        memoDecisions: job.memoDecisions,
+        manualMemoExclusions: job.manualMemoExclusions,
+      });
+      console.info(
+        `[memo-exclusion] job=${job.jobId} page=${slide.page} auto=${stats.autoExcludedCount} manual=${stats.manualExcludedCount}`,
+      );
 
       const promptFile = path
         .join("prompts", `${runId}_page${String(slide.page).padStart(3, "0")}.txt`)
@@ -79,22 +92,38 @@ export async function POST(request: Request) {
       fs.writeFileSync(path.join(jobDir, promptFile), prompt, "utf8");
 
       try {
+        const sourceSlidePath = path.join(jobDir, "source", "slides", slide.sourceImageFile);
         const generated = await generateImageWithGemini({
           apiKey,
           model: IMAGE_MODEL,
           prompt,
-          inputImagePath: path.join(jobDir, "source", "slides", slide.sourceImageFile),
+          inputImagePath: sourceSlidePath,
+          logoImagePaths,
           referenceImagePaths,
           aspectRatio: "16:9",
           imageSize: "2K",
         });
 
-        const ext = imageExtensionFromMime(generated.mimeType);
+        let outputBytes = generated.imageBytes;
+        let ext = imageExtensionFromMime(generated.mimeType);
+        if (logoImagePaths.length > 0) {
+          const lockResult = await applyLogoLock({
+            sourceSlidePath,
+            generatedImageBytes: generated.imageBytes,
+            logoReferencePaths: logoImagePaths,
+          });
+          if (!lockResult.ok) {
+            throw new Error(lockResult.error);
+          }
+          outputBytes = lockResult.imageBytes;
+          ext = "png";
+        }
+
         const outputImageFile = path
           .join("outputs", "design-check", `${runId}_page${String(slide.page).padStart(3, "0")}.${ext}`)
           .replaceAll("\\", "/");
 
-        fs.writeFileSync(path.join(jobDir, outputImageFile), generated.imageBytes);
+        fs.writeFileSync(path.join(jobDir, outputImageFile), outputBytes);
         fs.writeFileSync(
           path.join(jobDir, responseJsonFile),
           JSON.stringify(generated.responseJson, null, 2),

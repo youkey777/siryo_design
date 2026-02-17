@@ -60,6 +60,8 @@ export async function POST(request: Request) {
       slides: extracted.slides,
       memoDecisions,
       designReferenceFiles: [],
+      logoReferenceFiles: [],
+      manualMemoExclusions: [],
       runs: [],
     };
 
@@ -77,6 +79,9 @@ export async function POST(request: Request) {
       memoDecisions,
       designReferenceFiles: [],
       designReferenceUrls: [],
+      logoReferenceFiles: [],
+      logoReferenceUrls: [],
+      manualMemoExclusions: [],
       runs: [],
     });
   } catch (error) {

@@ -15,11 +15,13 @@ PowerPointを入力し、デザインプロンプトに沿ってNanobanana Pro A
 
 ## 使い方
 - 左側で `PowerPoint` と `全体デザインプロンプト` を入力
+- 任意で `ロゴマーク画像` を添付（複数可、生成後に同じロゴで固定上書き）
 - 任意で `デザイン参考ファイル` を添付（複数可）
 - `デザインを探す` でデザイン参照サイトをポップアップ表示
 - `デザインを確認する` で2枚だけ生成（右側に表示）
 - 問題なければ `本生成する` で本番生成（右側を上書き表示）
 - 本生成後に `修正・再生成` が表示される
+- `メモ書き除外チェック` で自動候補を除外し、未検出は `手動除外` を追加できる
 - 再生成は指定ページだけ更新され、他ページは保持される
 - `一つ戻る` で1ステップ前の生成状態へ戻せる（セッション内のみ）
 - `PDF出力` / `PowerPoint出力` で現在表示中の生成結果を書き出せる
@@ -38,6 +40,7 @@ npm run lint
 - APIレスポンス: `data/jobs/<jobId>/responses/`
 - 作業メモJSON: `data/jobs/<jobId>/metadata/job.json`
 - エクスポート: `data/jobs/<jobId>/exports/`
+- ロゴ参照: `data/jobs/<jobId>/source/logo-references/`
 
 ## 起動失敗時の確認
 - ランチャーログ: `logs/launcher_YYYYMMDD_HHMMSS.log`
