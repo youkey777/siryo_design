@@ -19,6 +19,10 @@ function contentTypeFromExt(file: string): string {
       return "application/json";
     case ".txt":
       return "text/plain; charset=utf-8";
+    case ".pdf":
+      return "application/pdf";
+    case ".pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
     default:
       return "application/octet-stream";
   }
@@ -34,19 +38,20 @@ export async function GET(
     const file = searchParams.get("file");
 
     if (!file) {
-      return NextResponse.json({ ok: false, error: "file が必要です。" }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "file パラメータが必要です。" }, { status: 400 });
     }
 
     const baseDir = getJobDir(jobId);
     const normalized = file.replaceAll("\\", "/");
     const resolved = path.resolve(baseDir, normalized);
+    const base = path.resolve(baseDir);
 
-    if (!resolved.startsWith(path.resolve(baseDir))) {
+    if (!resolved.startsWith(base)) {
       return NextResponse.json({ ok: false, error: "不正なファイルパスです。" }, { status: 400 });
     }
 
     if (!fs.existsSync(resolved)) {
-      return NextResponse.json({ ok: false, error: "ファイルが存在しません。" }, { status: 404 });
+      return NextResponse.json({ ok: false, error: "ファイルが見つかりません。" }, { status: 404 });
     }
 
     const body = fs.readFileSync(resolved);

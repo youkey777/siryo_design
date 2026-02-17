@@ -92,6 +92,7 @@ type DisplayResult = {
   source: "preview" | "generate" | "regenerate";
   versionLabel?: string;
   runId?: string;
+  outputImageFile?: string;
   error?: string;
 };
 
@@ -111,6 +112,22 @@ const DESIGN_REFERENCE_URL =
 const UI_STATE_STORAGE_KEY = "nanobanana-slide-studio/ui-state/v2";
 const PROMPT_ENGINE_LABEL = "Prompt: ローカルテンプレート生成（LLM呼び出しなし）";
 const DEFAULT_IMAGE_MODEL_LABEL = "Image: gemini-3-pro-image-preview";
+const FINAL_CURSOR_LATEST = Number.MAX_SAFE_INTEGER;
+
+type FinalDeckSnapshot = {
+  runId: string;
+  createdAt: string;
+  results: DisplayResult[];
+};
+
+type ExportFormat = "pdf" | "pptx";
+
+type ExportResponse = {
+  ok: boolean;
+  format: ExportFormat;
+  file: string;
+  url: string;
+};
 
 function createEditRow(page = ""): EditRow {
   return {
@@ -180,6 +197,57 @@ function openDesignPopupWindow(): Window | null {
   );
 }
 
+function buildFinalDeckSnapshots(runs: Run[]): FinalDeckSnapshot[] {
+  const sortedRuns = [...runs].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const latestByPage = new Map<number, DisplayResult>();
+  const snapshots: FinalDeckSnapshot[] = [];
+
+  for (const run of sortedRuns) {
+    run.results.forEach((result, index) => {
+      const previous = latestByPage.get(result.page);
+      if (result.status === "success" && result.imageUrl && result.outputImageFile) {
+        latestByPage.set(result.page, {
+          id: `${run.runId}_${result.page}_${index}`,
+          page: result.page,
+          status: "success",
+          imageUrl: result.imageUrl,
+          outputImageFile: result.outputImageFile,
+          source: run.type,
+          versionLabel: `v${result.version}`,
+          runId: run.runId,
+          error: undefined,
+        });
+        return;
+      }
+
+      if (!previous) {
+        latestByPage.set(result.page, {
+          id: `${run.runId}_${result.page}_${index}`,
+          page: result.page,
+          status: "error",
+          imageUrl: null,
+          source: run.type,
+          versionLabel: `v${result.version}`,
+          runId: run.runId,
+          error: result.error,
+        });
+      }
+    });
+
+    const snapshotResults = Array.from(latestByPage.values())
+      .sort((a, b) => a.page - b.page)
+      .map((item) => ({ ...item }));
+
+    snapshots.push({
+      runId: run.runId,
+      createdAt: run.createdAt,
+      results: snapshotResults,
+    });
+  }
+
+  return snapshots;
+}
+
 export default function HomePage() {
   const [fileName, setFileName] = useState("");
   const [queuedReferenceFiles, setQueuedReferenceFiles] = useState<File[]>([]);
@@ -190,12 +258,14 @@ export default function HomePage() {
   const [regenerateSelection, setRegenerateSelection] = useState("");
   const [previewResults, setPreviewResults] = useState<PreviewGeneratedResult[]>([]);
   const [displayMode, setDisplayMode] = useState<"preview" | "final" | null>(null);
+  const [finalHistoryCursor, setFinalHistoryCursor] = useState<number | null>(null);
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null);
   const [loadingOperation, setLoadingOperation] = useState<LoadingOperation | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
 
-  const loading = loadingOperation !== null;
+  const loading = loadingOperation !== null || exportingFormat !== null;
   const isImageGenerationRunning =
     loadingOperation === "design-check" ||
     loadingOperation === "generate" ||
@@ -260,30 +330,46 @@ export default function HomePage() {
   }, [job?.jobId, designPrompt, regenerateSelection, memoDecisions, editRows, displayMode]);
 
   const runs = useMemo(() => (Array.isArray(job?.runs) ? job.runs : []), [job]);
+  const runById = useMemo(() => new Map(runs.map((run) => [run.runId, run])), [runs]);
+  const finalDeckSnapshots = useMemo(() => buildFinalDeckSnapshots(runs), [runs]);
 
-  const latestRun = useMemo(() => {
-    if (runs.length === 0) {
+  useEffect(() => {
+    if (finalDeckSnapshots.length === 0) {
+      setFinalHistoryCursor(null);
+      return;
+    }
+
+    setFinalHistoryCursor((prev) => {
+      if (prev === null) {
+        return finalDeckSnapshots.length - 1;
+      }
+      return Math.max(0, Math.min(prev, finalDeckSnapshots.length - 1));
+    });
+  }, [finalDeckSnapshots.length]);
+
+  const activeFinalSnapshot = useMemo(() => {
+    if (finalDeckSnapshots.length === 0) {
       return null;
     }
-    return [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
-  }, [runs]);
 
-  const finalDisplayResults = useMemo<DisplayResult[]>(() => {
-    if (!latestRun) {
-      return [];
+    if (finalHistoryCursor === null || finalHistoryCursor === FINAL_CURSOR_LATEST) {
+      return finalDeckSnapshots[finalDeckSnapshots.length - 1];
     }
 
-    return latestRun.results.map((result, index) => ({
-      id: `${latestRun.runId}_${result.page}_${index}`,
-      page: result.page,
-      status: result.status,
-      imageUrl: result.imageUrl ?? null,
-      source: latestRun.type,
-      versionLabel: `v${result.version}`,
-      runId: latestRun.runId,
-      error: result.error,
-    }));
-  }, [latestRun]);
+    const clamped = Math.max(0, Math.min(finalHistoryCursor, finalDeckSnapshots.length - 1));
+    return finalDeckSnapshots[clamped];
+  }, [finalDeckSnapshots, finalHistoryCursor]);
+
+  const finalSnapshotIndex = useMemo(() => {
+    if (!activeFinalSnapshot) {
+      return -1;
+    }
+    return finalDeckSnapshots.findIndex((snapshot) => snapshot.runId === activeFinalSnapshot.runId);
+  }, [activeFinalSnapshot, finalDeckSnapshots]);
+
+  const finalDisplayResults = useMemo<DisplayResult[]>(() => {
+    return activeFinalSnapshot?.results ?? [];
+  }, [activeFinalSnapshot]);
 
   const previewDisplayResults = useMemo<DisplayResult[]>(() => {
     return previewResults.map((result, index) => ({
@@ -317,9 +403,15 @@ export default function HomePage() {
   }, [rightResults, selectedResultId]);
 
   const hasGeneratedResults = finalDisplayResults.length > 0;
+  const canUndoOneStep = displayMode === "final" && finalSnapshotIndex > 0;
+  const historyLabel =
+    finalSnapshotIndex >= 0 ? `${finalSnapshotIndex + 1}/${finalDeckSnapshots.length}` : "0/0";
+  const activeImageModelName = activeFinalSnapshot
+    ? runById.get(activeFinalSnapshot.runId)?.model
+    : null;
   const imageModelLabel =
-    displayMode === "final" && latestRun?.model
-      ? `Image: ${latestRun.model}`
+    displayMode === "final" && activeImageModelName
+      ? `Image: ${activeImageModelName}`
       : DEFAULT_IMAGE_MODEL_LABEL;
 
   useEffect(() => {
@@ -375,6 +467,7 @@ export default function HomePage() {
     setStatusText("PowerPointを読み込んでいます...");
     setPreviewResults([]);
     setDisplayMode(null);
+    setFinalHistoryCursor(null);
     setSelectedResultId(null);
 
     try {
@@ -418,6 +511,7 @@ export default function HomePage() {
       setJob(null);
       setPreviewResults([]);
       setDisplayMode(null);
+      setFinalHistoryCursor(null);
       setSelectedResultId(null);
       return;
     }
@@ -511,6 +605,7 @@ export default function HomePage() {
 
       await refreshJob(job.jobId);
       setDisplayMode("final");
+      setFinalHistoryCursor(FINAL_CURSOR_LATEST);
       setStatusText("本生成が完了しました。右側の結果を更新しました。");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "本生成に失敗しました。");
@@ -555,11 +650,72 @@ export default function HomePage() {
 
       await refreshJob(job.jobId);
       setDisplayMode("final");
+      setFinalHistoryCursor(FINAL_CURSOR_LATEST);
       setStatusText("再生成が完了しました。右側の結果を更新しました。");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "再生成に失敗しました。");
     } finally {
       setLoadingOperation(null);
+    }
+  };
+
+  const handleUndoOneStep = () => {
+    if (!activeFinalSnapshot || finalSnapshotIndex <= 0) {
+      return;
+    }
+
+    const nextIndex = finalSnapshotIndex - 1;
+    setFinalHistoryCursor(nextIndex);
+    setDisplayMode("final");
+    setStatusText(`1つ前の生成状態に戻しました。（${nextIndex + 1}/${finalDeckSnapshots.length}）`);
+    setErrorText("");
+  };
+
+  const handleExport = async (format: ExportFormat) => {
+    if (!job) {
+      setErrorText("先に本生成を実行してください。");
+      return;
+    }
+    if (!activeFinalSnapshot || activeFinalSnapshot.results.length === 0) {
+      setErrorText("出力対象の生成結果がありません。");
+      return;
+    }
+
+    const failedPages = activeFinalSnapshot.results.filter(
+      (result) => result.status !== "success" || !result.outputImageFile,
+    );
+    if (failedPages.length > 0) {
+      setErrorText("失敗ページがあるため出力できません。再生成で修正してから実行してください。");
+      return;
+    }
+
+    const slides = activeFinalSnapshot.results
+      .map((result) => ({
+        page: result.page,
+        outputImageFile: result.outputImageFile ?? "",
+      }))
+      .sort((a, b) => a.page - b.page);
+
+    setExportingFormat(format);
+    setErrorText("");
+    setStatusText(`${format.toUpperCase()}を出力しています...`);
+    try {
+      const payload = await fetchJson<ExportResponse>("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: job.jobId,
+          format,
+          slides,
+        }),
+      });
+
+      setStatusText(`${payload.format.toUpperCase()}を出力しました。`);
+      window.open(payload.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "エクスポートに失敗しました。");
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -809,6 +965,28 @@ export default function HomePage() {
                   </div>
                 </div>
               ))}
+
+              <h3 className="sectionTitle">4. 履歴・出力</h3>
+              <p className="small">生成履歴: {historyLabel}（ウィンドウを閉じると履歴表示はリセットされます）</p>
+              <div className="buttonRow">
+                <button className="btn" onClick={handleUndoOneStep} disabled={loading || !canUndoOneStep}>
+                  一つ戻る
+                </button>
+                <button
+                  className="btn btnPreview"
+                  onClick={() => handleExport("pdf")}
+                  disabled={loading || !hasGeneratedResults}
+                >
+                  PDF出力
+                </button>
+                <button
+                  className="btn btnPrimary"
+                  onClick={() => handleExport("pptx")}
+                  disabled={loading || !hasGeneratedResults}
+                >
+                  PowerPoint出力
+                </button>
+              </div>
             </>
           ) : null}
         </section>
@@ -825,6 +1003,9 @@ export default function HomePage() {
           <div className="modelInfoGrid">
             <span className="pill">{PROMPT_ENGINE_LABEL}</span>
             <span className="pill">{imageModelLabel}</span>
+            {displayMode === "final" && hasGeneratedResults ? (
+              <span className="pill">履歴 {historyLabel}</span>
+            ) : null}
           </div>
 
           <div className="resultsWorkspace">

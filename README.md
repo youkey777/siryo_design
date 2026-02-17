@@ -20,6 +20,9 @@ PowerPointを入力し、デザインプロンプトに沿ってNanobanana Pro A
 - `デザインを確認する` で2枚だけ生成（右側に表示）
 - 問題なければ `本生成する` で本番生成（右側を上書き表示）
 - 本生成後に `修正・再生成` が表示される
+- 再生成は指定ページだけ更新され、他ページは保持される
+- `一つ戻る` で1ステップ前の生成状態へ戻せる（セッション内のみ）
+- `PDF出力` / `PowerPoint出力` で現在表示中の生成結果を書き出せる
 - 元資料にロゴがある場合は、ロゴの形状・色・文字を保持する指示で生成
 
 ## 開発コマンド
@@ -34,6 +37,7 @@ npm run lint
 - 生成画像: `data/jobs/<jobId>/outputs/`
 - APIレスポンス: `data/jobs/<jobId>/responses/`
 - 作業メモJSON: `data/jobs/<jobId>/metadata/job.json`
+- エクスポート: `data/jobs/<jobId>/exports/`
 
 ## 起動失敗時の確認
 - ランチャーログ: `logs/launcher_YYYYMMDD_HHMMSS.log`
