@@ -1114,108 +1114,117 @@ export default function HomePage() {
           <h3 className="sectionTitle">2. メモ書き除外チェック</h3>
           <div className="memoList">
             {!job ? <p className="small">PowerPoint読み込み後に候補が表示されます。</p> : null}
-            {job?.slides.map((slide) => (
-              <div key={slide.page} className="memoItem">
-                <div className="buttonRow" style={{ justifyContent: "space-between" }}>
-                  <strong>ページ {slide.page}</strong>
-                  <span className="pill">候補 {slide.memoCandidates.length}</span>
-                </div>
-                {slide.memoCandidates.length === 0 ? (
-                  <p className="small">除外候補はありません。</p>
-                ) : (
-                  slide.memoCandidates.map((candidate) => {
-                    const checked = memoDecisions[candidate.id] ?? candidate.excludedByDefault;
-                    return (
-                      <label key={candidate.id} style={{ display: "block", marginTop: 10 }}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) => updateMemoDecision(candidate.id, event.target.checked)}
-                        />
-                        <span style={{ marginLeft: 8, fontWeight: 700 }}>除外する</span>
-                        <div className="small">{candidate.reason}</div>
-                        <div className="memoText">{candidate.text}</div>
-                      </label>
-                    );
-                  })
-                )}
-              </div>
-            ))}
-          </div>
+            {job?.slides.map((slide) => {
+              const pageManualRows = manualExclusionRows.filter(
+                (row) => Number(row.page) === slide.page,
+              );
 
-          <div className="row" style={{ marginTop: 10 }}>
-            <div className="buttonRow" style={{ justifyContent: "space-between" }}>
-              <h4 className="sectionTitle" style={{ marginBottom: 0 }}>
-                手動除外（未検出メモ用）
-              </h4>
-              <button
-                className="btn"
-                onClick={() => setManualExclusionRows((prev) => [...prev, createManualExclusionRow()])}
-                disabled={loading || !job}
-              >
-                手動除外を追加
-              </button>
-            </div>
-            {manualExclusionRows.length === 0 ? (
-              <p className="small">未検出のメモがある場合は、ここから除外ルールを追加してください。</p>
-            ) : null}
+              return (
+                <div key={slide.page} className="memoItem">
+                  <div className="buttonRow" style={{ justifyContent: "space-between" }}>
+                    <strong>ページ {slide.page}</strong>
+                    <span className="pill">候補 {slide.memoCandidates.length}</span>
+                  </div>
+                  {slide.memoCandidates.length === 0 ? (
+                    <p className="small">除外候補はありません。</p>
+                  ) : (
+                    slide.memoCandidates.map((candidate) => {
+                      const checked = memoDecisions[candidate.id] ?? candidate.excludedByDefault;
+                      return (
+                        <label key={candidate.id} style={{ display: "block", marginTop: 10 }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => updateMemoDecision(candidate.id, event.target.checked)}
+                          />
+                          <span style={{ marginLeft: 8, fontWeight: 700 }}>除外する</span>
+                          <div className="small">{candidate.reason}</div>
+                          <div className="memoText">{candidate.text}</div>
+                        </label>
+                      );
+                    })
+                  )}
 
-            {manualExclusionRows.map((row) => (
-              <div key={row.id} className="memoItem">
-                <div className="row">
-                  <label className="fieldLabel">ページ番号</label>
-                  <input
-                    className="input"
-                    value={row.page}
-                    onChange={(event) =>
-                      setManualExclusionRows((prev) =>
-                        prev.map((item) =>
-                          item.id === row.id ? { ...item, page: event.target.value } : item,
-                        ),
-                      )
-                    }
-                    placeholder="例: 12"
-                  />
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <div className="buttonRow" style={{ justifyContent: "space-between" }}>
+                      <h4 className="sectionTitle" style={{ marginBottom: 0 }}>
+                        手動除外（未検出メモ）
+                      </h4>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          setManualExclusionRows((prev) => [
+                            ...prev,
+                            createManualExclusionRow(String(slide.page)),
+                          ])
+                        }
+                        disabled={loading || !job}
+                      >
+                        このページに追加
+                      </button>
+                    </div>
+
+                    {pageManualRows.length === 0 ? (
+                      <p className="small">このページの手動除外はまだありません。</p>
+                    ) : (
+                      pageManualRows.map((row) => (
+                        <div key={row.id} className="memoItem">
+                          <div className="small">対象ページ: {slide.page}</div>
+                          <div className="row">
+                            <label className="fieldLabel">除外テキスト（部分一致）</label>
+                            <textarea
+                              className="textarea"
+                              value={row.text}
+                              onChange={(event) =>
+                                setManualExclusionRows((prev) =>
+                                  prev.map((item) =>
+                                    item.id === row.id ? { ...item, text: event.target.value } : item,
+                                  ),
+                                )
+                              }
+                              placeholder="例: キャリアアドバイザーのやりがいを提示して..."
+                            />
+                          </div>
+                          <label
+                            className="small"
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={row.enabled}
+                              onChange={(event) =>
+                                setManualExclusionRows((prev) =>
+                                  prev.map((item) =>
+                                    item.id === row.id ? { ...item, enabled: event.target.checked } : item,
+                                  ),
+                                )
+                              }
+                            />
+                            この手動除外を有効にする
+                          </label>
+                          <div className="buttonRow" style={{ marginTop: 8 }}>
+                            <button
+                              className="btn btnSecondary"
+                              onClick={() => handleSaveManualExclusion(row)}
+                              disabled={loading || !job}
+                            >
+                              保存
+                            </button>
+                            <button
+                              className="btn btnDanger"
+                              onClick={() => handleDeleteManualExclusion(row)}
+                              disabled={loading || !job}
+                            >
+                              削除
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-                <div className="row">
-                  <label className="fieldLabel">除外テキスト（部分一致）</label>
-                  <textarea
-                    className="textarea"
-                    value={row.text}
-                    onChange={(event) =>
-                      setManualExclusionRows((prev) =>
-                        prev.map((item) =>
-                          item.id === row.id ? { ...item, text: event.target.value } : item,
-                        ),
-                      )
-                    }
-                    placeholder="例: キャリアアドバイザーのやりがいを提示して..."
-                  />
-                </div>
-                <label className="small" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={row.enabled}
-                    onChange={(event) =>
-                      setManualExclusionRows((prev) =>
-                        prev.map((item) =>
-                          item.id === row.id ? { ...item, enabled: event.target.checked } : item,
-                        ),
-                      )
-                    }
-                  />
-                  この手動除外を有効にする
-                </label>
-                <div className="buttonRow" style={{ marginTop: 8 }}>
-                  <button className="btn btnSecondary" onClick={() => handleSaveManualExclusion(row)} disabled={loading || !job}>
-                    保存
-                  </button>
-                  <button className="btn btnDanger" onClick={() => handleDeleteManualExclusion(row)} disabled={loading || !job}>
-                    削除
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {hasGeneratedResults ? (
