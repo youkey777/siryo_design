@@ -19,8 +19,17 @@ export async function POST(request: Request) {
     const body = schema.parse(await request.json());
     const updated = upsertManualMemoExclusion(body.jobId, body.item);
 
+    const savedItem = (updated.manualMemoExclusions ?? []).find(
+      (row) =>
+        row.page === body.item.page &&
+        row.text === body.item.text.trim() &&
+        row.enabled === body.item.enabled &&
+        (body.item.id ? row.id === body.item.id : true),
+    );
+
     return NextResponse.json({
       ok: true,
+      savedItem: savedItem ?? null,
       manualMemoExclusions: updated.manualMemoExclusions ?? [],
     });
   } catch (error) {

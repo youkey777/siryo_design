@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 type MemoCandidate = {
@@ -22,6 +22,22 @@ type Slide = {
   memoCandidates: MemoCandidate[];
 };
 
+type LogoLockInfo = {
+  applied: boolean;
+  logoCount: number;
+  detections: Array<{
+    logoPath: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    score: number;
+  }>;
+  verificationScores: number[];
+  verified: boolean;
+  message?: string;
+};
+
 type RunResult = {
   page: number;
   version: number;
@@ -29,6 +45,7 @@ type RunResult = {
   outputImageFile: string;
   responseJsonFile: string;
   status: "success" | "error";
+  logoLock?: LogoLockInfo;
   error?: string;
   imageUrl?: string | null;
 };
@@ -90,6 +107,7 @@ type PreviewGeneratedResult = {
   promptFile: string;
   outputImageFile: string;
   responseJsonFile: string;
+  logoLock?: LogoLockInfo;
   error?: string;
 };
 
@@ -110,6 +128,9 @@ type ManualExclusionRow = {
   text: string;
   enabled: boolean;
   isNew?: boolean;
+  saveState: "idle" | "dirty" | "saving" | "saved" | "error";
+  saveMessage?: string;
+  lastSavedAt?: string;
 };
 
 type DisplayResult = {
@@ -121,6 +142,7 @@ type DisplayResult = {
   versionLabel?: string;
   runId?: string;
   outputImageFile?: string;
+  logoLock?: LogoLockInfo;
   error?: string;
 };
 
@@ -165,6 +187,26 @@ type ExportResponse = {
   url: string;
 };
 
+type ManualMemoItem = {
+  id: string;
+  page: number;
+  text: string;
+  enabled: boolean;
+};
+
+type ManualMemoSaveResponse = {
+  ok: boolean;
+  savedItem: ManualMemoItem | null;
+  manualMemoExclusions: ManualMemoItem[];
+};
+
+type ManualMemoDeleteResponse = {
+  ok: boolean;
+  manualMemoExclusions: ManualMemoItem[];
+};
+
+const MANUAL_SAVE_DEBOUNCE_MS = 600;
+
 function createEditRow(page = ""): EditRow {
   return {
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -180,7 +222,25 @@ function createManualExclusionRow(page = "", text = ""): ManualExclusionRow {
     text,
     enabled: true,
     isNew: true,
+    saveState: "idle",
+    saveMessage: "",
   };
+}
+
+function formatSavedTime(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleTimeString("ja-JP", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -266,6 +326,7 @@ function buildFinalDeckSnapshots(runs: Run[]): FinalDeckSnapshot[] {
           source: run.type,
           versionLabel: `v${result.version}`,
           runId: run.runId,
+          logoLock: result.logoLock,
           error: undefined,
         });
         return;
@@ -280,6 +341,7 @@ function buildFinalDeckSnapshots(runs: Run[]): FinalDeckSnapshot[] {
           source: run.type,
           versionLabel: `v${result.version}`,
           runId: run.runId,
+          logoLock: result.logoLock,
           error: result.error,
         });
       }
@@ -317,12 +379,25 @@ export default function HomePage() {
   const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null);
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
+  const manualSaveTimerRef = useRef<Record<string, number>>({});
+  const manualRowsRef = useRef<ManualExclusionRow[]>([]);
 
   const loading = loadingOperation !== null || exportingFormat !== null;
   const isImageGenerationRunning =
     loadingOperation === "design-check" ||
     loadingOperation === "generate" ||
     loadingOperation === "regenerate";
+
+  useEffect(() => {
+    manualRowsRef.current = manualExclusionRows;
+  }, [manualExclusionRows]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(manualSaveTimerRef.current).forEach((timer) => window.clearTimeout(timer));
+      manualSaveTimerRef.current = {};
+    };
+  }, []);
 
   useEffect(() => {
     const raw = window.sessionStorage.getItem(UI_STATE_STORAGE_KEY);
@@ -366,6 +441,8 @@ export default function HomePage() {
                 text: row.text,
                 enabled: row.enabled,
                 isNew: false,
+                saveState: "saved",
+                saveMessage: "保存済み",
               })),
             );
             setStatusText("前回の作業状態を復元しました。");
@@ -440,6 +517,7 @@ export default function HomePage() {
       status: result.status,
       imageUrl: result.imageUrl,
       source: "preview",
+      logoLock: result.logoLock,
       error: result.error,
     }));
   }, [previewResults]);
@@ -501,6 +579,8 @@ export default function HomePage() {
         text: row.text,
         enabled: row.enabled,
         isNew: false,
+        saveState: "saved",
+        saveMessage: "保存済み",
       })),
     );
   };
@@ -586,6 +666,8 @@ export default function HomePage() {
           text: row.text,
           enabled: row.enabled,
           isNew: false,
+          saveState: "saved",
+          saveMessage: "保存済み",
         })),
       );
       setEditRows([createEditRow()]);
@@ -681,6 +763,159 @@ export default function HomePage() {
     );
   };
 
+  const clearManualSaveTimer = (rowId: string) => {
+    const timer = manualSaveTimerRef.current[rowId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete manualSaveTimerRef.current[rowId];
+    }
+  };
+
+  const saveManualExclusionById = async (rowId: string): Promise<boolean> => {
+    if (!job) {
+      return false;
+    }
+
+    clearManualSaveTimer(rowId);
+    const row = manualRowsRef.current.find((item) => item.id === rowId);
+    if (!row) {
+      return true;
+    }
+
+    const page = Number(row.page);
+    const text = row.text.trim();
+    if (!text) {
+      setManualExclusionRows((prev) =>
+        prev.map((item) =>
+          item.id === rowId
+            ? {
+                ...item,
+                saveState: "error",
+                saveMessage: "除外テキストを入力してください。",
+              }
+            : item,
+        ),
+      );
+      return false;
+    }
+    if (!Number.isInteger(page) || page <= 0 || page > job.slideCount) {
+      setManualExclusionRows((prev) =>
+        prev.map((item) =>
+          item.id === rowId
+            ? {
+                ...item,
+                saveState: "error",
+                saveMessage: `ページ番号は1-${job.slideCount}の範囲で入力してください。`,
+              }
+            : item,
+        ),
+      );
+      return false;
+    }
+
+    setManualExclusionRows((prev) =>
+      prev.map((item) =>
+        item.id === rowId
+          ? {
+              ...item,
+              saveState: "saving",
+              saveMessage: "保存中...",
+            }
+          : item,
+      ),
+    );
+
+    try {
+      const payload = await fetchJson<ManualMemoSaveResponse>("/api/memo/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: job.jobId,
+          item: {
+            id: row.id.startsWith("tmp_") ? undefined : row.id,
+            page,
+            text,
+            enabled: row.enabled,
+          },
+        }),
+      });
+
+      const savedItem =
+        payload.savedItem ??
+        payload.manualMemoExclusions.find(
+          (item) => item.page === page && item.text === text && item.enabled === row.enabled,
+        );
+      const savedAt = new Date().toISOString();
+      const nextId = savedItem?.id ?? rowId;
+      const statusMessage = `保存済み ${formatSavedTime(savedAt)}`;
+
+      setManualExclusionRows((prev) =>
+        prev.map((item) => {
+          if (item.id !== rowId && item.id !== nextId) {
+            return item;
+          }
+          return {
+            ...item,
+            id: nextId,
+            page: String(savedItem?.page ?? page),
+            text: savedItem?.text ?? text,
+            enabled: savedItem?.enabled ?? row.enabled,
+            isNew: false,
+            saveState: "saved",
+            saveMessage: statusMessage,
+            lastSavedAt: savedAt,
+          };
+        }),
+      );
+      setStatusText(`手動除外を保存しました。 (page ${page})`);
+      setErrorText("");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "手動除外の保存に失敗しました。";
+      setManualExclusionRows((prev) =>
+        prev.map((item) =>
+          item.id === rowId
+            ? {
+                ...item,
+                saveState: "error",
+                saveMessage: message,
+              }
+            : item,
+        ),
+      );
+      setErrorText(message);
+      return false;
+    }
+  };
+
+  const scheduleManualAutosave = (rowId: string) => {
+    clearManualSaveTimer(rowId);
+    manualSaveTimerRef.current[rowId] = window.setTimeout(() => {
+      void saveManualExclusionById(rowId);
+    }, MANUAL_SAVE_DEBOUNCE_MS);
+  };
+
+  const flushPendingManualExclusionSaves = async (): Promise<boolean> => {
+    Object.keys(manualSaveTimerRef.current).forEach((rowId) => clearManualSaveTimer(rowId));
+
+    const rowsToSave = manualRowsRef.current.filter(
+      (row) =>
+        row.text.trim().length > 0 &&
+        (row.saveState === "dirty" || row.saveState === "error" || row.isNew),
+    );
+    if (rowsToSave.length === 0) {
+      return true;
+    }
+
+    setStatusText("手動除外の未保存内容を保存しています...");
+    const saved = await Promise.all(rowsToSave.map((row) => saveManualExclusionById(row.id)));
+    const ok = saved.every(Boolean);
+    if (!ok) {
+      setErrorText("手動除外の保存に失敗した行があります。保存状態を確認してください。");
+    }
+    return ok;
+  };
+
   const handleDesignCheck = async () => {
     if (!job) {
       setErrorText("先にPowerPointファイルを選択してください。");
@@ -688,6 +923,10 @@ export default function HomePage() {
     }
     if (!designPrompt.trim()) {
       setErrorText("全体デザインプロンプトを入力してください。");
+      return;
+    }
+    const canProceed = await flushPendingManualExclusionSaves();
+    if (!canProceed) {
       return;
     }
 
@@ -724,6 +963,10 @@ export default function HomePage() {
     }
     if (!designPrompt.trim()) {
       setErrorText("全体デザインプロンプトを入力してください。");
+      return;
+    }
+    const canProceed = await flushPendingManualExclusionSaves();
+    if (!canProceed) {
       return;
     }
 
@@ -772,6 +1015,10 @@ export default function HomePage() {
       setErrorText("再生成するページ番号と修正指示を入力してください。");
       return;
     }
+    const canProceed = await flushPendingManualExclusionSaves();
+    if (!canProceed) {
+      return;
+    }
 
     setLoadingOperation("regenerate");
     setErrorText("");
@@ -800,51 +1047,24 @@ export default function HomePage() {
     }
   };
 
-  const handleSaveManualExclusion = async (row: ManualExclusionRow) => {
-    if (!job) {
-      setErrorText("先にPowerPointファイルを選択してください。");
-      return;
-    }
-    const page = Number(row.page);
-    if (!Number.isInteger(page) || page <= 0 || page > job.slideCount) {
-      setErrorText(`ページ番号は1-${job.slideCount}の範囲で入力してください。`);
-      return;
-    }
-    if (!row.text.trim()) {
-      setErrorText("除外テキストを入力してください。");
-      return;
-    }
-
-    setErrorText("");
-    setStatusText(`手動除外を保存しています... (page ${page})`);
-    try {
-      await fetchJson<{ ok: boolean; manualMemoExclusions: Array<{ id: string; page: number; text: string; enabled: boolean }> }>(
-        "/api/memo/manual",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId: job.jobId,
-            item: {
-              id: row.id.startsWith("tmp_") ? undefined : row.id,
-              page,
-              text: row.text.trim(),
-              enabled: row.enabled,
-            },
-          }),
-        },
-      );
-      await refreshJob(job.jobId);
-      setStatusText(`手動除外を保存しました。 (page ${page})`);
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "手動除外の保存に失敗しました。");
+  const handleSaveManualExclusion = async (rowId: string) => {
+    const saved = await saveManualExclusionById(rowId);
+    if (!saved) {
+      setErrorText("手動除外の保存に失敗しました。行内ステータスを確認してください。");
     }
   };
 
-  const handleDeleteManualExclusion = async (row: ManualExclusionRow) => {
+  const handleDeleteManualExclusion = async (rowId: string) => {
     if (!job) {
       return;
     }
+
+    clearManualSaveTimer(rowId);
+    const row = manualRowsRef.current.find((item) => item.id === rowId);
+    if (!row) {
+      return;
+    }
+
     if (row.id.startsWith("tmp_")) {
       setManualExclusionRows((prev) => prev.filter((item) => item.id !== row.id));
       return;
@@ -853,18 +1073,15 @@ export default function HomePage() {
     setErrorText("");
     setStatusText("手動除外を削除しています...");
     try {
-      await fetchJson<{ ok: boolean; manualMemoExclusions: Array<{ id: string; page: number; text: string; enabled: boolean }> }>(
-        "/api/memo/manual/delete",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId: job.jobId,
-            id: row.id,
-          }),
-        },
-      );
-      await refreshJob(job.jobId);
+      await fetchJson<ManualMemoDeleteResponse>("/api/memo/manual/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: job.jobId,
+          id: row.id,
+        }),
+      });
+      setManualExclusionRows((prev) => prev.filter((item) => item.id !== row.id));
       setStatusText("手動除外を削除しました。");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "手動除外の削除に失敗しました。");
@@ -1175,13 +1392,32 @@ export default function HomePage() {
                             <textarea
                               className="textarea"
                               value={row.text}
-                              onChange={(event) =>
+                              onChange={(event) => {
+                                const value = event.target.value;
                                 setManualExclusionRows((prev) =>
                                   prev.map((item) =>
-                                    item.id === row.id ? { ...item, text: event.target.value } : item,
+                                    item.id === row.id
+                                      ? {
+                                          ...item,
+                                          text: value,
+                                          saveState: "dirty",
+                                          saveMessage: "未保存",
+                                        }
+                                      : item,
                                   ),
-                                )
-                              }
+                                );
+                                if (value.trim().length > 0) {
+                                  scheduleManualAutosave(row.id);
+                                } else {
+                                  clearManualSaveTimer(row.id);
+                                }
+                              }}
+                              onBlur={(event) => {
+                                if (!event.currentTarget.value.trim()) {
+                                  return;
+                                }
+                                void saveManualExclusionById(row.id);
+                              }}
                               placeholder="例: キャリアアドバイザーのやりがいを提示して..."
                             />
                           </div>
@@ -1192,27 +1428,64 @@ export default function HomePage() {
                             <input
                               type="checkbox"
                               checked={row.enabled}
-                              onChange={(event) =>
+                              onChange={(event) => {
                                 setManualExclusionRows((prev) =>
                                   prev.map((item) =>
-                                    item.id === row.id ? { ...item, enabled: event.target.checked } : item,
+                                    item.id === row.id
+                                      ? {
+                                          ...item,
+                                          enabled: event.target.checked,
+                                          saveState: "dirty",
+                                          saveMessage: "未保存",
+                                        }
+                                      : item,
                                   ),
-                                )
-                              }
+                                );
+                                if (row.text.trim().length > 0) {
+                                  scheduleManualAutosave(row.id);
+                                } else {
+                                  clearManualSaveTimer(row.id);
+                                }
+                              }}
                             />
                             この手動除外を有効にする
                           </label>
+                          <div className={`manualSaveState ${row.saveState}`}>
+                            {row.saveState === "saving" ? (
+                              <span className="spinner spinnerSmall" aria-hidden="true" />
+                            ) : null}
+                            <span>
+                              {row.saveState === "saved" && row.lastSavedAt
+                                ? `保存済み ${formatSavedTime(row.lastSavedAt)}`
+                                : row.saveState === "saving"
+                                  ? "保存中..."
+                                  : row.saveState === "error"
+                                    ? row.saveMessage || "保存失敗"
+                                    : row.saveState === "dirty"
+                                      ? "未保存"
+                                      : row.saveMessage || "未保存"}
+                            </span>
+                          </div>
                           <div className="buttonRow" style={{ marginTop: 8 }}>
                             <button
                               className="btn btnSecondary"
-                              onClick={() => handleSaveManualExclusion(row)}
+                              onClick={() => handleSaveManualExclusion(row.id)}
                               disabled={loading || !job}
                             >
                               保存
                             </button>
+                            {row.saveState === "error" ? (
+                              <button
+                                className="btn"
+                                onClick={() => handleSaveManualExclusion(row.id)}
+                                disabled={loading || !job}
+                              >
+                                再試行
+                              </button>
+                            ) : null}
                             <button
                               className="btn btnDanger"
-                              onClick={() => handleDeleteManualExclusion(row)}
+                              onClick={() => handleDeleteManualExclusion(row.id)}
                               disabled={loading || !job}
                             >
                               削除
@@ -1371,6 +1644,12 @@ export default function HomePage() {
                       <div className="buttonRow">
                         <span className="pill">{result.source === "preview" ? "design-check" : result.source}</span>
                         {result.source === "regenerate" ? <span className="pill pillRegen">再生成</span> : null}
+                        {result.logoLock?.applied && result.logoLock.verified ? (
+                          <span className="pill pillLogoLock">ロゴ固定</span>
+                        ) : null}
+                        {result.logoLock?.applied && !result.logoLock.verified ? (
+                          <span className="pill pillLogoLockError">ロゴ固定失敗</span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="slideFrame slideFrameSmall">
@@ -1401,6 +1680,12 @@ export default function HomePage() {
                     </strong>
                     <div className="buttonRow">
                       {selectedResult.source === "regenerate" ? <span className="pill pillRegen">再生成</span> : null}
+                      {selectedResult.logoLock?.applied && selectedResult.logoLock.verified ? (
+                        <span className="pill pillLogoLock">ロゴ固定</span>
+                      ) : null}
+                      {selectedResult.logoLock?.applied && !selectedResult.logoLock.verified ? (
+                        <span className="pill pillLogoLockError">ロゴ固定失敗</span>
+                      ) : null}
                       {selectedResult.runId ? <span className="small">runId: {selectedResult.runId}</span> : null}
                     </div>
                   </div>
@@ -1418,6 +1703,11 @@ export default function HomePage() {
                       <div className="slideFallback">{selectedResult.error ?? "生成に失敗しました"}</div>
                     )}
                   </div>
+                  {selectedResult.logoLock?.applied && selectedResult.logoLock.message ? (
+                    <p className={selectedResult.logoLock.verified ? "small" : "error"}>
+                      {selectedResult.logoLock.message}
+                    </p>
+                  ) : null}
                 </>
               ) : (
                 <p className="small">サムネイルを選択すると、ここに拡大表示されます。</p>

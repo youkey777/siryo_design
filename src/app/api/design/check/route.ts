@@ -7,6 +7,7 @@ import { getApiKey } from "@/lib/settings";
 import { buildPromptForSlide, getPromptExclusionStats } from "@/lib/prompts";
 import { applyLogoLock } from "@/lib/logo-lock";
 import { generateImageWithGemini, imageExtensionFromMime } from "@/lib/gemini";
+import type { LogoLockInfo } from "@/lib/types";
 import { getJobDir } from "@/lib/paths";
 
 export const runtime = "nodejs";
@@ -16,6 +17,7 @@ const schema = z.object({
   designPrompt: z.string().min(1),
   memoDecisions: z.record(z.string(), z.boolean()).optional(),
 });
+
 const IMAGE_MODEL = "gemini-3-pro-image-preview";
 
 function createPreviewRunId(): string {
@@ -23,10 +25,20 @@ function createPreviewRunId(): string {
   return `designcheck_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+function fallbackLogoLockInfo(message: string): LogoLockInfo {
+  return {
+    applied: true,
+    logoCount: 0,
+    detections: [],
+    verificationScores: [],
+    verified: false,
+    message,
+  };
+}
+
 export async function POST(request: Request) {
   try {
     const body = schema.parse(await request.json());
-
     const apiKey = getApiKey();
     if (!apiKey) {
       return NextResponse.json(
@@ -61,6 +73,7 @@ export async function POST(request: Request) {
       promptFile: string;
       outputImageFile: string;
       responseJsonFile: string;
+      logoLock?: LogoLockInfo;
       error?: string;
     }> = [];
 
@@ -88,7 +101,6 @@ export async function POST(request: Request) {
       const responseJsonFile = path
         .join("responses", `${runId}_page${String(slide.page).padStart(3, "0")}.json`)
         .replaceAll("\\", "/");
-
       fs.writeFileSync(path.join(jobDir, promptFile), prompt, "utf8");
 
       try {
@@ -106,6 +118,14 @@ export async function POST(request: Request) {
 
         let outputBytes = generated.imageBytes;
         let ext = imageExtensionFromMime(generated.mimeType);
+        let logoLock: LogoLockInfo = {
+          applied: false,
+          logoCount: 0,
+          detections: [],
+          verificationScores: [],
+          verified: true,
+        };
+
         if (logoImagePaths.length > 0) {
           const lockResult = await applyLogoLock({
             sourceSlidePath,
@@ -117,16 +137,23 @@ export async function POST(request: Request) {
           }
           outputBytes = lockResult.imageBytes;
           ext = "png";
+          logoLock = lockResult.metadata;
         }
 
         const outputImageFile = path
           .join("outputs", "design-check", `${runId}_page${String(slide.page).padStart(3, "0")}.${ext}`)
           .replaceAll("\\", "/");
-
         fs.writeFileSync(path.join(jobDir, outputImageFile), outputBytes);
         fs.writeFileSync(
           path.join(jobDir, responseJsonFile),
-          JSON.stringify(generated.responseJson, null, 2),
+          JSON.stringify(
+            {
+              geminiResponse: generated.responseJson,
+              logoLock,
+            },
+            null,
+            2,
+          ),
           "utf8",
         );
 
@@ -137,6 +164,7 @@ export async function POST(request: Request) {
           promptFile,
           outputImageFile,
           responseJsonFile,
+          logoLock,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "デザイン確認生成に失敗しました。";
@@ -147,6 +175,7 @@ export async function POST(request: Request) {
           promptFile,
           outputImageFile: "",
           responseJsonFile,
+          logoLock: fallbackLogoLockInfo(message),
           error: message,
         });
       }

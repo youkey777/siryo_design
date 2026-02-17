@@ -8,7 +8,7 @@ import { parsePageSelection } from "@/lib/page-selection";
 import { buildPromptForSlide, getPromptExclusionStats } from "@/lib/prompts";
 import { applyLogoLock } from "@/lib/logo-lock";
 import { generateImageWithGemini, imageExtensionFromMime } from "@/lib/gemini";
-import type { GenerationResult, GenerationRun } from "@/lib/types";
+import type { GenerationResult, GenerationRun, LogoLockInfo } from "@/lib/types";
 import { getJobDir } from "@/lib/paths";
 
 export const runtime = "nodejs";
@@ -25,6 +25,17 @@ const IMAGE_MODEL = "gemini-3-pro-image-preview";
 function createRunId(): string {
   const now = new Date();
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function fallbackLogoLockInfo(message: string): LogoLockInfo {
+  return {
+    applied: true,
+    logoCount: 0,
+    detections: [],
+    verificationScores: [],
+    verified: false,
+    message,
+  };
 }
 
 export async function POST(request: Request) {
@@ -78,7 +89,6 @@ export async function POST(request: Request) {
       const responseJsonFile = path
         .join("responses", `${runId}_page${String(page).padStart(3, "0")}_v${version}.json`)
         .replaceAll("\\", "/");
-
       fs.writeFileSync(path.join(jobDir, promptFile), prompt, "utf8");
 
       try {
@@ -96,6 +106,13 @@ export async function POST(request: Request) {
 
         let outputBytes = generated.imageBytes;
         let ext = imageExtensionFromMime(generated.mimeType);
+        let logoLock: LogoLockInfo = {
+          applied: false,
+          logoCount: 0,
+          detections: [],
+          verificationScores: [],
+          verified: true,
+        };
 
         if (logoImagePaths.length > 0) {
           const lockResult = await applyLogoLock({
@@ -108,6 +125,7 @@ export async function POST(request: Request) {
           }
           outputBytes = lockResult.imageBytes;
           ext = "png";
+          logoLock = lockResult.metadata;
         }
 
         const outputImageFile = path
@@ -115,7 +133,18 @@ export async function POST(request: Request) {
           .replaceAll("\\", "/");
 
         fs.writeFileSync(path.join(jobDir, outputImageFile), outputBytes);
-        fs.writeFileSync(path.join(jobDir, responseJsonFile), JSON.stringify(generated.responseJson, null, 2), "utf8");
+        fs.writeFileSync(
+          path.join(jobDir, responseJsonFile),
+          JSON.stringify(
+            {
+              geminiResponse: generated.responseJson,
+              logoLock,
+            },
+            null,
+            2,
+          ),
+          "utf8",
+        );
 
         results.push({
           page,
@@ -124,9 +153,10 @@ export async function POST(request: Request) {
           outputImageFile,
           responseJsonFile,
           status: "success",
+          logoLock,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "生成失敗";
+        const message = error instanceof Error ? error.message : "生成に失敗しました。";
         results.push({
           page,
           version,
@@ -134,6 +164,7 @@ export async function POST(request: Request) {
           outputImageFile: "",
           responseJsonFile,
           status: "error",
+          logoLock: fallbackLogoLockInfo(message),
           error: message,
         });
       }

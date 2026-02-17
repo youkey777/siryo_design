@@ -21,6 +21,24 @@ export type SlideInfo = {
   memoCandidates: MemoCandidate[];
 };
 
+export type LogoLockDetection = {
+  logoPath: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  score: number;
+};
+
+export type LogoLockInfo = {
+  applied: boolean;
+  logoCount: number;
+  detections: LogoLockDetection[];
+  verificationScores: number[];
+  verified: boolean;
+  message?: string;
+};
+
 export type GenerationResult = {
   page: number;
   version: number;
@@ -28,6 +46,7 @@ export type GenerationResult = {
   outputImageFile: string;
   responseJsonFile: string;
   status: "success" | "error";
+  logoLock?: LogoLockInfo;
   error?: string;
 };
 
